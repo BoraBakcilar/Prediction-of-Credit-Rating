@@ -1,0 +1,584 @@
+---
+title: "412 project"
+author: "Bora Bakçılar 2290534"
+date: "2024-04-13"
+output: pdf_document
+---
+
+### Kendime Not:
+1)faiz ve enflasyon verileri çekilip future enginering yapılabilir
+Annual income ile ev sahibi olmanın bir anlamı var mı 
+
+
+```{r libs}
+library(caret)
+library(factoextra)
+library(readr)
+library(GGally)
+library(stringr)
+library(ggplot2)
+library(tidyr)
+library(mice)
+library(car)
+library(bestNormalize)
+library(zoo)
+library(reshape2)
+library(pls)
+library(nnet)
+library(pROC)
+library(dplyr)
+library(class)
+library(e1071)
+library(rpart)
+
+
+
+```
+
+First import data 
+```{r importing}
+finance_data <- read_csv("/Users/borabakcilar/Desktop/412 Machine learning/proje/archive/loan.csv")
+```
+
+### Data Cleaning
+lets try to check data have any problem 
+
+
+```{r}
+set.seed(412)
+#If any columns have more than 50% missing values (NA) in the dataset, we should remove those columns immediately. If we are unable to build a meaningful model, we can revisit and examine them later.
+
+fin_cleaned <- finance_data[, colMeans(is.na(finance_data)) <= 0.50] 
+colSums(is.na(fin_cleaned))
+
+md_pattern <- md.pattern(fin_cleaned)
+# If I omit all NA I will not have any observation 
+# lets first use just numeric variables 
+numeric_cols <- sapply(fin_cleaned, is.numeric) 
+my_numerics <- fin_cleaned[,numeric_cols]
+
+# Lets fill NA  
+data_filled <- as.data.frame(na.approx(my_numerics))
+
+# but we can not apply for integers
+fin_coppy <- fin_cleaned
+fin_cleaned[, sapply(fin_cleaned, is.numeric)] <- data_filled
+colSums(is.na(fin_cleaned))
+
+# we can omit integer na rows. We can fill them but that make more expensive 
+fin_cleaned <- na.omit(fin_cleaned)
+
+
+# We lose nearly%10 observation 2.26M to 2.07 
+
+
+# Now we have 2.07 M variable and 87 observation lets look for numerics's correlation when we have high correlation we can omit one of them 
+numeric_columns <- fin_cleaned[, sapply(fin_cleaned, is.numeric)]
+numeric_columns <- na.omit(numeric_columns)
+cor_matrix <- cor(numeric_columns)
+correlation_threshold <- 0.9
+high_correlation_pairs <- which(abs(cor_matrix) > correlation_threshold & abs(cor_matrix) < 1, arr.ind = TRUE)
+sütunları_at <- character()
+
+
+
+for (i in 1:nrow(high_correlation_pairs)) {
+    col1 <- colnames(cor_matrix)[high_correlation_pairs[i, "col"]]
+    col2 <- colnames(cor_matrix)[high_correlation_pairs[i, "row"]]
+      if (!(col2 %in% sütunları_at)) {
+        sütunları_at <- c(sütunları_at, col2)
+    }
+}
+
+
+
+
+sütunları_at <- unique(sütunları_at)
+fin_cleaned <- fin_cleaned[, !names(fin_cleaned) %in% sütunları_at]
+
+# Now we have 70 observation we omit 17 them because they are highly correlated and they causes multicolinearity 
+# I think I save enough information from data 
+non_numeric_columns <- fin_cleaned[, !sapply(fin_cleaned, is.numeric)]
+
+# In a emp_length collumn have some trouble and we can not fix n/a values there emp_title column and it is consist of  ceo cfo etc. emp_title which have n/a emp_length so n/a not mean 0 we can not do any aplication for thesee values so I will omit this collumn with other unnecessary   
+
+fin_cleaned <- fin_cleaned[, !names(fin_cleaned) %in% c("emp_length","zip_code","title","policy_code")]
+
+
+
+# lastly we reduce our some problematic columns now we can do other operations 
+
+###
+####### fin_cleaned <- fin_cleaned[!duplicated(fin_cleaned), ]. # gereksiz uzun sürüyor çalıştırma duplicate yok
+###
+
+# no duplicated! variable count does not change. 
+# I will change my  column name but I have 69 column now lets try to reduce this with creating research questions
+
+# emp_title sütununda çok fazla faklı değer var bunları faktörleştirmek maliyeti arttırır bundan dolayı şuanlık girişmiyoruz.
+
+# Gereksiz görünen numerik olmayan bazı sütunlarıda çıkarttıktan sonra artık araştırma sorularımızı oluşturup veri görselleştirmesine geçebiliriz ilerliyen aşamalarda bilgisayarım hesaplama gücünüde göz önüne aldığımızda daha az sütun ile aynı sonuçları çıkartan bir model geliştirebilirz 
+
+# İssue_d collumn means that founded credit date we can say statrting day of credit for this column lets assing it to starting date of credit 
+
+```
+
+
+### EDA
+```{r EDA}
+summary(fin_cleaned)
+str(fin_cleaned)
+# Now we have clean data we can take a sample from cleaned. 
+
+# take %30 random variable from fin_cleaned 
+set.seed(412)
+sampled_data <- fin_cleaned %>%
+  sample_frac(0.3)
+
+# ilk soru olarak grade ile current balance arasında bir bağlantı var mı bunu yapmak için ilk görselleştirelim 
+ggplot(sampled_data, aes(x = grade, y = avg_cur_bal, col = grade))+
+  geom_boxplot() + 
+    xlab(" Grade") + ylab("Average Current Balance")
+# Here is bad graph lets first normalize data
+
+# Lets first normalize numeric observation to crate easly understandable EDA 
+numeric_columns <- sapply(sampled_data, is.numeric)
+normalized_data <- sampled_data
+# I remove them because they spend memory I dont need any more them 
+
+
+#Normalization code: I will use it lately when I apply my models to my all data
+start_time <- proc.time()
+for (col_name in names(numeric_columns)[numeric_columns]) {
+    bn_transform <- bestNormalize(sampled_data[[col_name]])
+    normalized_data[[col_name]] <- predict(bn_transform, sampled_data[[col_name]])
+}
+
+finish_time <- proc.time() - start_time # 8403.022 /60 = 140 min 
+finish_time
+head(normalized_data)
+
+# Normalize yerine scale seçeneğinide kullanabiliriz hızlı hesaplamak için 
+scaled_data <- sampled_data
+scaled_data[, numeric_columns] <- scale(sampled_data[, numeric_columns])
+
+
+######
+# normalized_data_coppy <- normalized_data
+# normalized_data <- normalized_data_coppy
+######
+
+# EDA
+
+# Lets start the some visulation to see what I have 
+ggplot(normalized_data,aes(x=grade,fill = grade))+
+  geom_bar()
+
+ggplot(normalized_data,aes(x = annual_inc, y = grade, col = grade))+
+  geom_boxplot() + xlab("Annual Income") + ylab("Grade") +  ggtitle("Box plot of Annual Income and Grade") 
+######################################################################################################
+
+# kredi notu ile gelir düzeyleri arasında pek anlamlı bir fark yok gibi gözüküyor yada ödemesi geciken borçlar için pek etkisi yok #
+##################################################################################################################
+#         Ev sahipliği/ grade
+mosaic1 <- table(normalized_data$home_ownership, sampled_data$grade)
+mosaicplot(mosaic1, main = "Home Status and Grade",
+           color = c("red","blue","pink","cyan","orange","brown","purple"), las = 1)
+
+##################################################################################################################
+              # Eyaletlere göre kredi çekim talepleri/verilen krediler
+ggplot(normalized_data, aes(x = addr_state)) +
+    geom_bar(fill = "steelblue") +  
+    labs(title = "Frequency of state",
+         x = "Address State",
+         y = "Frequency") +  
+    theme_minimal() 
+# capillary bir fark var mı bulunulan eyalet kredi red onay sayısını etkiliyor mu chi_sq test yapılcak
+
+
+##################################################################################################################
+                # Eyaletlere göre F ve W gruplarının dağılımına bakalım 
+ggplot(normalized_data, aes(x = addr_state, fill = initial_list_status)) +
+    geom_bar(position = "dodge") +  # `geom_bar()` ile bar plot oluşturma ve sütunları yan yana gösterme
+    labs(title = "Frequency by addr_state and initial_list_status",
+         x = "Address State",
+         y = "Frequency",
+         fill = "Initial List Status") +  
+    theme_minimal()
+
+##################################################################################################################
+              # Alınabilir maks kredi ile gelir düzeyi
+
+ggplot(normalized_data, aes(x = total_il_high_credit_limit, y = annual_inc, color = grade)) +
+    geom_point() + 
+  geom_smooth(method = "lm", se = FALSE) +
+    labs(title = "Relationship between total_il_high_credit_limit and annual_inc",
+         x = "High Credit Limit",
+         y = "Annual Income",
+         color = "Grade") + 
+    theme_minimal()
+# there are no big difference to grades, income and high credit limit by graph
+##################################################################################################################
+                  # lets look corelastion heat map
+ normalized_numeric <- normalized_data[,sapply(normalized_data,is.numeric)]
+# We have 0 variance columns for normalized data 
+ variance_values <- apply(normalized_numeric, 2, var)
+zero_variance_columns <- names(variance_values)[variance_values == 0]
+filtered_data <- normalized_numeric[, !names(normalized_numeric) %in% zero_variance_columns]
+
+# scaled data için 0 var atımı variance_values 
+scaled_numeric <- scaled_data[,sapply(scaled_data,is.numeric)]
+variance_values_scaled <- apply(scaled_data[,numeric_columns], 2, var)
+zero_variance_columns_scaled<- names(variance_values_scaled)[variance_values_scaled == 0]
+filtered_data_scaled <- scaled_numeric[, !names(scaled_numeric) %in% zero_variance_columns_scaled]
+
+
+### heat map continue 
+correlation_matrix <- cor(filtered_data)
+melted_correlation <- melt(correlation_matrix)
+heatmap_plot <- ggplot(melted_correlation, aes(x = Var1, y = Var2, fill = value)) +
+    geom_tile() + 
+    scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, 
+                         limit = c(-1, 1), space = "Lab", name = "Correlation") +
+    theme_minimal() +  
+    labs(title = "Correlation Heatmap", x = "Variables", y = "Variables")
+
+##################################################################################################################
+
+# Grade with verification of annual income 
+mosaic2 <- table(normalized_data$verification_status, sampled_data$grade)
+mosaicplot(mosaic2, main = "Verification and Grade",
+           color = c("red","blue","pink","cyan","orange","brown","purple"), las = 1)
+
+######################
+
+mosaic3 <- table(normalized_data$loan_status, sampled_data$grade)
+mosaicplot(mosaic3, main = "Loan Status and Grade",
+           color = c("red","blue","pink","cyan","orange","brown","purple"), las = 1)
+
+unique(normalized_data$loan_status)
+
+normalized_data$loan_status <- sapply(normalized_data$loan_status, function(x) {
+    split_text <- strsplit(x, "Status:")
+    if (length(split_text[[1]]) > 1) {
+        return(split_text[[1]][2])
+    } else {
+        return(x)
+    }
+})
+# Lets print same mosaic plot 
+mosaic3 <- table(normalized_data$loan_status, sampled_data$grade)
+mosaicplot(mosaic3, main = "Loan Status and Grade",
+           color = c("red","blue","pink","cyan","orange","brown","purple"), las = 1)
+
+# as we see loan status have an effect on grades when grades decrease loan status getting negative 
+###########
+
+
+ggplot(normalized_data, aes(x= home_ownership, y= annual_inc, col = home_ownership)) +
+  geom_boxplot()
+
+
+# kredi skorları için internetten veri bulunabilir ve skor puanlarına göre aralıklara göre bir dağılım yapılabilir var olan modelin nasıl çalıştığıunı anlamak için bu method kullanılabilir bu sayede kişilerin kredi skorları öğrenilir ve bunları belirlemede kullanılan yeni skorlar oluşturulur sıkı para politikaları için daha katı bir model kullanılırken esnek para politikiları için daha esnek bir model kullanılabilir.
+
+# yeni maksimum alınabilir kredi limitleri belirlemek için bir model kurulabilir kişilerin faktörleri ve sayısal değerleri hesaba katılarak yeni bir model oluşturulabilir. Yada yeni gelenler için bir model kurulabilir 
+
+```
+
+# ANOVA PART to answer questions
+1
+```{r grade ~ home_ownership Chi}
+normalized_data$home_ownership <- as.factor(normalized_data$home_ownership)
+
+normalized_data$grade <- as.factor(normalized_data$grade)
+
+contingency_table <- table(normalized_data$grade, normalized_data$home_ownership)
+contingency_table
+# Chi square test
+chi_square_result <- chisq.test(contingency_table)
+
+# View the results
+chi_square_result
+
+
+mosaic1 <- table(normalized_data$home_ownership, normalized_data$grade)
+mosaicplot(mosaic1, main = "Home Status and Grade",
+           color = c("red","blue","pink","cyan","orange","brown","purple"), las = 1)
+
+
+
+
+
+
+```
+
+
+2
+```{r grade ~ annual income}
+ggplot(normalized_data, aes(x = grade, y = annual_inc,color = grade)) +
+  geom_boxplot() +
+  xlab("Grade") +
+  ylab("Annual Income") +
+  ggtitle("Box plot of Annual Income and Grade") +
+  theme_minimal()
+
+anova_income_home <- aov(annual_inc ~ grade, data = normalized_data)
+summary(anova_income_home)
+
+TukeyHSD(anova_income_home)
+
+
+
+```
+
+
+3
+```{r loan status between grade }
+unique(normalized_data$loan_status)
+
+normalized_data <- normalized_data %>%
+  mutate(loan_status = ifelse(loan_status == "Does not meet the credit policy. Status:Fully Paid", "Fully Paid", loan_status))
+
+normalized_data <- normalized_data %>%
+  mutate(loan_status = ifelse(loan_status == "Does not meet the credit policy. Status:Charged Off", "Charged Off", loan_status))
+
+unique(normalized_data$loan_status)
+#Done 
+loan_grade <- table(normalized_data$loan_status,normalized_data$grade)
+loan_grade
+
+my_chi_result <- chisq.test(loan_grade)
+my_chi_result
+
+mosaic3 <- table(normalized_data$grade, normalized_data$loan_status)
+mosaicplot(mosaic3, main = "Loan Status and Grade",
+           color = c("red","blue","pink","cyan","orange","brown","purple"), las = 1)
+
+
+
+```
+
+4
+```{r}
+correlation <- cor(normalized_data$annual_inc, normalized_data$total_il_high_credit_limit, method = "pearson")
+print(paste("Pearson korelasyon katsayısı:", correlation))
+
+# Korelasyonun anlamlılığını test etme
+cor_test <- cor.test(normalized_data$annual_inc, normalized_data$total_il_high_credit_limit, method = "pearson")
+print(cor_test)
+
+ggplot(normalized_data, aes(x = annual_inc, y = total_il_high_credit_limit)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm") + xlab("Annual Income") + ylab("Maximum Credit Limit")
+
+  
+
+```
+
+
+5
+```{r}
+
+# Home owners and others 
+A_income <- normalized_data$annual_inc[normalized_data$grade == 'A']
+B_income <- normalized_data$annual_inc[normalized_data$grade == 'B']
+
+
+t_result <- t.test(normalized_data$annual_inc[normalized_data$grade == 'A'],mu = mean(B_income), alternative = "greater")
+print(t_result)
+```
+
+
+
+
+
+### One hot encodin
+
+```{r One hot Coding }
+set.seed(412)
+# I drop them because they can affect my model they dont have more observatiopn
+categorical_columns <- c("home_ownership", "loan_status",
+                         "pymnt_plan", "purpose", "initial_list_status",
+                         "disbursement_method", "debt_settlement_flag")
+one_hot_encoded <- model.matrix(~ . -1, data = normalized_data[, categorical_columns])
+one_hot_encoded_df <- as.data.frame(one_hot_encoded)
+numeric_columns <- setdiff(names(filtered_data_scaled), categorical_columns)
+numeric_data <- filtered_data_scaled[numeric_columns]
+one_hot_coded <- bind_cols(numeric_data, one_hot_encoded_df)
+head(one_hot_coded)
+# Now we have one hot coded data with numeric columns. Now I will apply pca to reduce some other numeric columns to build more efficient models 
+
+```
+
+
+### Dimension reduction and model building
+
+
+```{r my base model}
+set.seed(412)
+trainIndex <- createDataPartition(normalized_data$grade, p = 0.8, list = FALSE)
+numeric_data$grade <- normalized_data$grade
+train_pcr1 <- numeric_data[trainIndex, ]
+test_pcr1 <- numeric_data[-trainIndex, ]
+train_onehot <- one_hot_encoded_df[trainIndex,]
+test_onehot <- one_hot_encoded_df[-trainIndex,]
+
+# PCA ile %80 varyansı açıklayan bileşenleri al
+preProc <- preProcess(train_pcr1[ , -ncol(train_pcr1)], method = "pca", thresh = 0.80)
+train_pca <- predict(preProc, train_pcr1[ , -ncol(train_pcr1)])
+test_pca <- predict(preProc, test_pcr1[ , -ncol(test_pcr1)])
+
+
+# PCA bileşenlerini veri setine ekleyin
+train_data_pca <- data.frame(train_pca, grade = train_pcr1$grade)
+test_data_pca <- data.frame(test_pca, grade = test_pcr1$grade)
+
+# One-hot encoded verileri PCA bileşenlerine ekleyin
+train_data_pca <- cbind(train_data_pca, train_onehot)
+test_data_pca <- cbind(test_data_pca, test_onehot)
+
+train_data_pca$grade <- as.factor(train_data_pca$grade)
+test_data_pca$grade <- as.factor(test_data_pca$grade)
+# train_data_pca <- train_data_pca[,-28]
+# test_data_pca <- test_data_pca[,-28]
+# Multinomial lojistik regresyon modeli oluşturma
+my_multinom_model <- multinom(grade ~ ., data = train_data_pca)
+
+# Model performansını değerlendirme
+glm_pred_pca <- predict(my_multinom_model, test_data_pca)
+
+# Confusion matrix ve doğruluk hesaplama
+confusion_matrix_pca <- confusionMatrix(as.factor(glm_pred_pca), as.factor(test_data_pca$grade))
+accuracy_pca <- mean(glm_pred_pca == test_data_pca$grade)
+
+print(confusion_matrix_pca)
+print(paste("Accuracy:", accuracy_pca))
+
+# We can improve our kappa and accuracy rate by feature enginering or other methods we can change our model bulding we can apply svm or random forest to make a tahmin
+
+```
+
+
+
+```{r cross validation }
+# Cross validation 
+train_control <- trainControl(method = "cv", number = 5, classProbs = TRUE, summaryFunction = defaultSummary)
+# Multinomial lojistik regresion 
+my_multinom_model_cv <- train(grade ~ ., data = train_data_pca, method = "multinom", trControl = train_control)
+multinom_pred_pca_cv <- predict(my_multinom_model_cv, test_data_pca)
+multinom_pred_pca_cv <- factor(multinom_pred_pca_cv, levels = levels(test_data_pca$grade))
+multinom_probs <- predict(my_multinom_model_cv, test_data_pca, type = "prob")
+
+confusion_matrix_pca <- confusionMatrix(multinom_pred_pca_cv, test_data_pca$grade)
+accuracy_pca <- confusion_matrix_pca$overall["Accuracy"]
+
+# Sonuçları yazdırma
+print(confusion_matrix_pca)
+print(paste("Accuracy:", accuracy_pca))
+
+multi_roc <- function(probs, true_labels) {
+  roc_list <- list()
+  auc_list <- list()
+  
+  classes <- levels(true_labels)
+  for (class in classes) {
+    roc <- roc(response = as.numeric(true_labels == class), predictor = probs[[class]])
+    roc_list[[class]] <- roc
+    auc_list[[class]] <- auc(roc)
+  }
+  
+  return(list(ROC = roc_list, AUC = auc_list))
+}
+
+roc_results <- multi_roc(multinom_probs, test_data_pca$grade)
+
+# AUC değerlerini yazdırma
+print(roc_results$AUC)
+
+
+plot.multi_roc <- function(multi_roc) {
+  plot(0, 0, type = "n", xlab = "False Positive Rate", ylab = "True Positive Rate", xlim = c(0, 1), ylim = c(0, 1), main = "ROC Curves")
+  abline(0, 1, col = "gray")
+  for (class in names(multi_roc$ROC)) {
+    plot(multi_roc$ROC[[class]], col = sample(colors(), 1), add = TRUE, main = paste("ROC Curve for", class))
+  }
+  legend("bottomright", legend = names(multi_roc$ROC), col = 1:length(multi_roc$ROC), lty = 1, cex = 0.8)
+}
+
+plot.multi_roc(roc_results)
+```
+
+
+```{r with knn }
+train_control <- trainControl(method = "cv", number = 3, classProbs = TRUE, summaryFunction = defaultSummary)
+
+knn_model <- train(grade ~ ., data = train_data_pca, method = "knn")
+print(knn_model)
+
+# Prediction
+knn_pred <- predict(knn_model, test_data_pca)
+
+# Confusion matrix and accuracy
+confusion_matrix_knn <- confusionMatrix(knn_pred, test_data_pca$grade)
+accuracy_knn <- confusion_matrix_knn$overall["Accuracy"]
+
+
+print(confusion_matrix_knn)
+print(paste("Accuracy:", accuracy_knn))
+
+```
+
+
+```{r decision tree}
+tree_model <- train(grade ~ ., data = train_data_pca, method = "rpart2", trControl = train_control)
+print(tree_model)
+
+# Test veri seti üzerinde tahmin yapma
+tree_pred <- predict(tree_model, test_data_pca)
+
+# Confusion matrix ve doğruluk hesaplama
+confusion_matrix_tree <- confusionMatrix(tree_pred, test_data_pca$grade)
+accuracy_tree <- confusion_matrix_tree$overall["Accuracy"]
+
+# Sonuçları yazdırma
+print(confusion_matrix_tree)
+print(paste("Accuracy:", accuracy_tree))
+```
+
+
+```{r}
+svm_model <- train(grade ~ ., data = train_data_pca, method = "svmRadial", trControl = train_control)
+
+# SVM modelinin özetini yazdırma
+print(svm_model)
+
+# Test veri seti üzerinde tahmin yapma
+svm_pred <- predict(svm_model, test_data_pca)
+
+# Confusion matrix ve doğruluk hesaplama
+confusion_matrix_svm <- confusionMatrix(svm_pred, test_data_pca$grade)
+accuracy_svm <- confusion_matrix_svm$overall["Accuracy"]
+
+# Sonuçları yazdırma
+print(confusion_matrix_svm)
+print(paste("Accuracy:", accuracy_svm))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
